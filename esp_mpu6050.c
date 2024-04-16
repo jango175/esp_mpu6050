@@ -53,7 +53,7 @@ static esp_err_t mpu6050_write(mpu6050_handle_t sensor, const uint8_t reg_start_
     uint8_t data[data_len + 1];
     data[0] = reg_start_addr;
     for (uint8_t i = 1; i < data_len + 1; i++)
-        data[i] = data_buf[i];
+        data[i] = data_buf[i - 1];
 
     ret = i2c_master_transmit(sens->dev_handle, data, data_len + 1, 1000);
 
@@ -81,12 +81,10 @@ mpu6050_handle_t mpu6050_create(i2c_port_t port, const uint16_t dev_addr, const 
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = dev_addr << 1,
+        .device_address = dev_addr,
         .scl_speed_hz = scl_speed_hz
     };
-    i2c_master_dev_handle_t i2c_dev_handle;
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &i2c_dev_handle));
-    sensor->dev_handle = i2c_dev_handle;
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &(sensor->dev_handle)));
 
     return (mpu6050_handle_t) sensor;
 }
