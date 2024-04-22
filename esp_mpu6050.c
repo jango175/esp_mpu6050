@@ -462,3 +462,21 @@ esp_err_t mpu6050_complimentory_filter(mpu6050_handle_t sensor, const mpu6050_ac
 
     return ESP_OK;
 }
+
+esp_err_t mpu6050_i2c_passthrough(mpu6050_handle_t sensor)
+{
+    esp_err_t ret;
+
+    uint8_t data = 0;
+    ret = mpu6050_write(sensor, 0x6A, &data, 1);
+    vTaskDelay(1);
+
+    data = 2;
+    ret = mpu6050_write(sensor, 0x37, &data, 1);
+    vTaskDelay(1);
+
+    data = 0;
+    ret = mpu6050_write(sensor, 0x6B, &data, 1);
+
+    return ret;
+}

@@ -395,6 +395,17 @@ esp_err_t mpu6050_get_temp(mpu6050_handle_t sensor, mpu6050_temp_value_t *const 
 esp_err_t mpu6050_complimentory_filter(mpu6050_handle_t sensor, const mpu6050_acce_value_t *const acce_value,
                                        const mpu6050_gyro_value_t *const gyro_value, complimentary_angle_t *const complimentary_angle);
 
+/**
+ * @brief Enable I2C passthrough mode
+ *
+ * @param sensor object handle of mpu6050
+ *
+ * @return
+ *     - ESP_OK Success
+ *     - ESP_FAIL Fail
+*/
+esp_err_t mpu6050_i2c_passthrough(mpu6050_handle_t sensor);
+
 #ifdef __cplusplus
 }
 #endif
