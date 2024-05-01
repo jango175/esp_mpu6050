@@ -12,6 +12,8 @@
 #include "driver/i2c.h"
 #include "esp_mpu6050.h"
 
+#define MPU6050_TIMEOUT_MS          1
+
 #define ALPHA                       0.99f        /*!< Weight of gyroscope */
 #define RAD_TO_DEG                  57.27272727f /*!< Radians to degrees */
 
@@ -55,7 +57,7 @@ static esp_err_t mpu6050_write(mpu6050_handle_t sensor, const uint8_t reg_start_
     for (uint8_t i = 1; i < data_len + 1; i++)
         data[i] = data_buf[i - 1];
 
-    ret = i2c_master_transmit(sens->dev_handle, data, data_len + 1, 1000);
+    ret = i2c_master_transmit(sens->dev_handle, data, data_len + 1, MPU6050_TIMEOUT_MS);
 
     return ret;
 }
@@ -65,7 +67,7 @@ static esp_err_t mpu6050_read(mpu6050_handle_t sensor, const uint8_t reg_start_a
     mpu6050_dev_t *sens = (mpu6050_dev_t *) sensor;
     esp_err_t  ret;
 
-    ret = i2c_master_transmit_receive(sens->dev_handle, &reg_start_addr, 1, data_buf, data_len, 1000);
+    ret = i2c_master_transmit_receive(sens->dev_handle, &reg_start_addr, 1, data_buf, data_len, MPU6050_TIMEOUT_MS);
 
     return ret;
 }
