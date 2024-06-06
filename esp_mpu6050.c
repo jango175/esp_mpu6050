@@ -1,484 +1,367 @@
-/*
- * SPDX-FileCopyrightText: 2015-2021 Espressif Systems (Shanghai) CO LTD
- *
- * SPDX-License-Identifier: Apache-2.0
- */
-
 #include <stdio.h>
-#include <math.h>
-#include <time.h>
-#include <sys/time.h>
-#include "esp_system.h"
-#include "driver/i2c.h"
 #include "esp_mpu6050.h"
 
-#define MPU6050_TIMEOUT_MS          1
-
-#define ALPHA                       0.99f        /*!< Weight of gyroscope */
-#define RAD_TO_DEG                  57.27272727f /*!< Radians to degrees */
-
-/* MPU6050 register */
-#define MPU6050_GYRO_CONFIG         0x1Bu
-#define MPU6050_ACCEL_CONFIG        0x1Cu
-#define MPU6050_INTR_PIN_CFG        0x37u
-#define MPU6050_INTR_ENABLE         0x38u
-#define MPU6050_INTR_STATUS         0x3Au
-#define MPU6050_ACCEL_XOUT_H        0x3Bu
-#define MPU6050_GYRO_XOUT_H         0x43u
-#define MPU6050_TEMP_XOUT_H         0x41u
-#define MPU6050_PWR_MGMT_1          0x6Bu
-#define MPU6050_WHO_AM_I            0x75u
-
-const uint8_t MPU6050_DATA_RDY_INT_BIT =      (uint8_t) BIT0;
-const uint8_t MPU6050_I2C_MASTER_INT_BIT =    (uint8_t) BIT3;
-const uint8_t MPU6050_FIFO_OVERFLOW_INT_BIT = (uint8_t) BIT4;
-const uint8_t MPU6050_MOT_DETECT_INT_BIT =    (uint8_t) BIT6;
-const uint8_t MPU6050_ALL_INTERRUPTS = (MPU6050_DATA_RDY_INT_BIT | MPU6050_I2C_MASTER_INT_BIT | MPU6050_FIFO_OVERFLOW_INT_BIT | MPU6050_MOT_DETECT_INT_BIT);
-
+#ifdef HMC5883L_I2C_INIT
+static i2c_master_bus_handle_t bus_handle;
+#else
 extern i2c_master_bus_handle_t bus_handle;
+#endif
+static i2c_master_dev_handle_t dev_handle;
 
-typedef struct {
-    i2c_master_dev_handle_t dev_handle;
-    i2c_port_t bus;
-    gpio_num_t int_pin;
-    uint16_t dev_addr;
-    uint32_t counter;
-    float dt;  /*!< delay time between two measurements, dt should be small (ms level) */
-    struct timeval *timer;
-} mpu6050_dev_t;
 
-static esp_err_t mpu6050_write(mpu6050_handle_t sensor, const uint8_t reg_start_addr, const uint8_t *const data_buf, const uint8_t data_len)
+/**
+ * @brief i2c write handler
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param data pointer to the array for data to write
+ * @param data_len length of data to write
+*/
+static void i2c_write(mpu6050_conf_t mpu, uint8_t* data, uint32_t data_len)
 {
-    mpu6050_dev_t *sens = (mpu6050_dev_t *) sensor;
-    esp_err_t ret;
-
-    uint8_t data[data_len + 1];
-    data[0] = reg_start_addr;
-    for (uint8_t i = 1; i < data_len + 1; i++)
-        data[i] = data_buf[i - 1];
-
-    ret = i2c_master_transmit(sens->dev_handle, data, data_len + 1, MPU6050_TIMEOUT_MS);
-
-    return ret;
+    ESP_ERROR_CHECK(i2c_master_transmit(dev_handle, data, data_len, MPU6050_TIMEOUT_MS));
 }
 
-static esp_err_t mpu6050_read(mpu6050_handle_t sensor, const uint8_t reg_start_addr, uint8_t *const data_buf, const uint8_t data_len)
+
+/**
+ * @brief i2c read and write handler
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param reg address of register to read
+ * @param data pointer to the array for read data
+ * @param data_len length of data to read
+*/
+static void i2c_write_read(mpu6050_conf_t mpu, uint8_t reg, uint8_t* data, uint32_t data_len)
 {
-    mpu6050_dev_t *sens = (mpu6050_dev_t *) sensor;
-    esp_err_t  ret;
-
-    ret = i2c_master_transmit_receive(sens->dev_handle, &reg_start_addr, 1, data_buf, data_len, MPU6050_TIMEOUT_MS);
-
-    return ret;
+    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, data, data_len, MPU6050_TIMEOUT_MS));
 }
 
-mpu6050_handle_t mpu6050_create(i2c_port_t port, const uint16_t dev_addr, const uint32_t scl_speed_hz)
+
+/**
+ * @brief initialize MPU6050
+ * 
+ * @param mpu struct with MPU6050 parameters
+*/
+void mpu6050_init(mpu6050_conf_t mpu)
 {
-    mpu6050_dev_t *sensor = (mpu6050_dev_t *) calloc(1, sizeof(mpu6050_dev_t));
-    sensor->bus = port;
-    sensor->dev_addr = dev_addr << 1;
-    sensor->counter = 0;
-    sensor->dt = 0;
-    sensor->timer = (struct timeval *) calloc(1, sizeof(struct timeval));
+#ifdef MPU6050_I2C_INIT
+    if (mpu.i2c_freq > MPU6050_MAX_FREQ)
+    {
+        mpu.i2c_freq = MPU6050_MAX_FREQ;
+        printf("QMC5883L: I2C frequency too high, set to value: %d Hz\n", MPU6050_MAX_FREQ);
+    }
+
+    i2c_master_bus_config_t i2c_mst_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = mpu.i2c_port,
+        .scl_io_num = mpu.scl_pin,
+        .sda_io_num = mpu.sda_pin,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true
+    };
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &bus_handle));
+#endif
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = dev_addr,
-        .scl_speed_hz = scl_speed_hz
+        .device_address = mpu.i2c_addr,
+        .scl_speed_hz = mpu.i2c_freq
     };
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &(sensor->dev_handle)));
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle));
 
-    return (mpu6050_handle_t) sensor;
+    mpu6050_set_power(mpu, false, false, false, true, MPU6050_CLKSEL_INTERNAL);
+    mpu6050_set_sample_rate_divider(mpu, 0);
+    mpu6050_set_config(mpu, MPU6050_EXT_SYNC_SET_DISABLED, MPU6050_DLPF_CFG_0);
+    mpu6050_set_gyroscope_config(mpu, false, false, false, MPU6050_FS_SEL_250);
+    mpu6050_set_accelerometer_config(mpu, false, false, false, MPU6050_AFS_SEL_2G);
+    mpu6050_set_fifo_enable(mpu, false, true, true, false, false, false);
 }
 
-void mpu6050_delete(mpu6050_handle_t sensor)
+
+/**
+ * @brief set sample rate divider
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param divider sample rate divider (Sample Rate = Gyroscope Output Rate / (1 + SMPLRT_DIV))
+*/
+void mpu6050_set_sample_rate_divider(mpu6050_conf_t mpu, uint8_t divider)
 {
-    mpu6050_dev_t *sens = (mpu6050_dev_t *) sensor;
-    free(sens);
+    uint8_t data[2] = {MPU6050_SMPLRT_DIV, divider};
+    i2c_write(mpu, data, 2);
 }
 
-esp_err_t mpu6050_get_deviceid(mpu6050_handle_t sensor, uint8_t *const deviceid)
+
+/**
+ * @brief set MPU6050 configuration
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param ext_sync_set FSYNC configuration
+ * @param dlpf_cfg Digital Low Pass Filter configuration
+*/
+void mpu6050_set_config(mpu6050_conf_t mpu, enum mpu6050_ext_sync_set ext_sync_set, enum mpu6050_dlpf_cfg dlpf_cfg)
 {
-    return mpu6050_read(sensor, MPU6050_WHO_AM_I, deviceid, 1);
+    uint8_t old_config = 0;
+    i2c_write_read(mpu, MPU6050_CONFIG, &old_config, 1);
+
+    uint8_t config = (old_config & 0b11000000) | (ext_sync_set << 3) | dlpf_cfg;
+
+    uint8_t data[2] = {MPU6050_CONFIG, config};
+    i2c_write(mpu, data, 2);
 }
 
-esp_err_t mpu6050_wake_up(mpu6050_handle_t sensor)
+
+/**
+ * @brief set gyroscope configuration
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param xg_st X-axis gyroscope self-test
+ * @param yg_st Y-axis gyroscope self-test
+ * @param zg_st Z-axis gyroscope self-test
+ * @param fs_sel gyroscope full scale range
+*/
+void mpu6050_set_gyroscope_config(mpu6050_conf_t mpu, bool xg_st, bool yg_st, bool zg_st, enum mpu6050_fs_sel fs_sel)
 {
-    esp_err_t ret;
-    uint8_t tmp;
-    ret = mpu6050_read(sensor, MPU6050_PWR_MGMT_1, &tmp, 1);
-    if (ESP_OK != ret) {
-        return ret;
-    }
-    tmp &= (~BIT6);
-    ret = mpu6050_write(sensor, MPU6050_PWR_MGMT_1, &tmp, 1);
-    return ret;
+    uint8_t old_config = 0;
+    i2c_write_read(mpu, MPU6050_GYRO_CONFIG, &old_config, 1);
+
+    uint8_t config = ((uint8_t)xg_st << 7) | ((uint8_t)yg_st << 6) | ((uint8_t)zg_st << 5) |
+                        (fs_sel << 3) | (old_config & 0b00000111);
+
+    uint8_t data[2] = {MPU6050_GYRO_CONFIG, config};
+    i2c_write(mpu, data, 2);
+
+    mpu.fs_sel = fs_sel;
 }
 
-esp_err_t mpu6050_sleep(mpu6050_handle_t sensor)
+
+/**
+ * @brief set accelerometer configuration
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param xa_st X-axis accelerometer self-test
+ * @param ya_st Y-axis accelerometer self-test
+ * @param za_st Z-axis accelerometer self-test
+ * @param afs_sel accelerometer full scale range
+*/
+void mpu6050_set_accelerometer_config(mpu6050_conf_t mpu, bool xa_st, bool ya_st, bool za_st,
+                                        enum mpu6050_afs_sel afs_sel)
 {
-    esp_err_t ret;
-    uint8_t tmp;
-    ret = mpu6050_read(sensor, MPU6050_PWR_MGMT_1, &tmp, 1);
-    if (ESP_OK != ret) {
-        return ret;
-    }
-    tmp |= BIT6;
-    ret = mpu6050_write(sensor, MPU6050_PWR_MGMT_1, &tmp, 1);
-    return ret;
+    uint8_t old_config = 0;
+    i2c_write_read(mpu, MPU6050_ACCEL_CONFIG, &old_config, 1);
+
+    uint8_t config = ((uint8_t)xa_st << 7) | ((uint8_t)ya_st << 6) | ((uint8_t)za_st << 5) |
+                        (afs_sel << 3) | (old_config & 0b00000111);
+
+    uint8_t data[2] = {MPU6050_ACCEL_CONFIG, config};
+    i2c_write(mpu, data, 2);
+
+    mpu.afs_sel = afs_sel;
 }
 
-esp_err_t mpu6050_config(mpu6050_handle_t sensor, const mpu6050_acce_fs_t acce_fs, const mpu6050_gyro_fs_t gyro_fs)
+
+/**
+ * set FIFO enable
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param enable_temp enable temperature sensor
+ * @param enable_gyro enable gyroscope
+ * @param enable_accel enable accelerometer
+ * @param enable_slave2 enable external sensor 2
+ * @param enable_slave1 enable external sensor 1
+ * @param enable_slave0 enable external sensor 0
+*/
+void mpu6050_set_fifo_enable(mpu6050_conf_t mpu, bool enable_temp, bool enable_gyro, bool enable_accel,
+                              bool enable_slave2, bool enable_slave1, bool enable_slave0)
 {
-    uint8_t config_regs[2] = {gyro_fs << 3,  acce_fs << 3};
-    return mpu6050_write(sensor, MPU6050_GYRO_CONFIG, config_regs, sizeof(config_regs));
+    uint8_t enable = ((uint8_t)enable_temp << 7) | ((uint8_t)enable_gyro << 6) | ((uint8_t)enable_gyro << 5) |
+                     ((uint8_t)enable_gyro << 4) | ((uint8_t)enable_accel << 3) | ((uint8_t)enable_slave2 << 2) |
+                     ((uint8_t)enable_slave1 << 1) | (uint8_t)enable_slave0;
+
+    uint8_t data[2] = {MPU6050_FIFO_EN, enable};
+    i2c_write(mpu, data, 2);
 }
 
-esp_err_t mpu6050_get_acce_sensitivity(mpu6050_handle_t sensor, float *const acce_sensitivity)
+
+/**
+ * @brief set MPU6050 to I2C passthrough mode
+ * 
+ * @param mpu struct with MPU6050 parameters
+*/
+void mpu6050_i2c_passthrough(mpu6050_conf_t mpu)
 {
-    esp_err_t ret;
-    uint8_t acce_fs;
-    ret = mpu6050_read(sensor, MPU6050_ACCEL_CONFIG, &acce_fs, 1);
-    acce_fs = (acce_fs >> 3) & 0x03;
-    switch (acce_fs) {
-    case ACCE_FS_2G:
-        *acce_sensitivity = 16384;
-        break;
+    uint8_t data[2] = {0x6A, 0};
+    i2c_write(mpu, data, 2);
 
-    case ACCE_FS_4G:
-        *acce_sensitivity = 8192;
-        break;
+    data[0] = 0x37;
+    data[1] = 2;
+    i2c_write(mpu, data, 2);
 
-    case ACCE_FS_8G:
-        *acce_sensitivity = 4096;
-        break;
-
-    case ACCE_FS_16G:
-        *acce_sensitivity = 2048;
-        break;
-
-    default:
-        break;
-    }
-    return ret;
+    data[0] = 0x6B;
+    data[1] = 0;
+    i2c_write(mpu, data, 2);
 }
 
-esp_err_t mpu6050_get_gyro_sensitivity(mpu6050_handle_t sensor, float *const gyro_sensitivity)
+
+/**
+ * @brief read raw accelerometer data
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param x pointer to x-axis data
+ * @param y pointer to y-axis data
+ * @param z pointer to z-axis data
+*/
+void mpu6050_read_raw_accelerometer(mpu6050_conf_t mpu, int16_t* x, int16_t* y, int16_t* z)
 {
-    esp_err_t ret;
-    uint8_t gyro_fs;
-    ret = mpu6050_read(sensor, MPU6050_GYRO_CONFIG, &gyro_fs, 1);
-    gyro_fs = (gyro_fs >> 3) & 0x03;
-    switch (gyro_fs) {
-    case GYRO_FS_250DPS:
-        *gyro_sensitivity = 131;
-        break;
+    uint8_t data[6];
+    i2c_write_read(mpu, MPU6050_ACCEL_XOUT_MSB, data, 6);
 
-    case GYRO_FS_500DPS:
-        *gyro_sensitivity = 65.5;
-        break;
-
-    case GYRO_FS_1000DPS:
-        *gyro_sensitivity = 32.8;
-        break;
-
-    case GYRO_FS_2000DPS:
-        *gyro_sensitivity = 16.4;
-        break;
-
-    default:
-        break;
-    }
-    return ret;
+    *x = (data[0] << 8) | data[1];
+    *y = (data[2] << 8) | data[3];
+    *z = (data[4] << 8) | data[5];
 }
 
-esp_err_t mpu6050_config_interrupts(mpu6050_handle_t sensor, const mpu6050_int_config_t *const interrupt_configuration)
+
+/**
+ * @brief read raw temperature data
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param temp pointer to temperature data
+*/
+void mpu6050_read_raw_temperature(mpu6050_conf_t mpu, int16_t* temp)
 {
-    esp_err_t ret = ESP_OK;
+    uint8_t data[2];
+    i2c_write_read(mpu, MPU6050_TEMP_OUT_MSB, data, 2);
 
-    if (NULL == interrupt_configuration) {
-        ret = ESP_ERR_INVALID_ARG;
-        return ret;
-    }
-
-    if (GPIO_IS_VALID_GPIO(interrupt_configuration->interrupt_pin)) {
-        // Set GPIO connected to MPU6050 INT pin only when user configures interrupts.
-        mpu6050_dev_t *sensor_device = (mpu6050_dev_t *) sensor;
-        sensor_device->int_pin = interrupt_configuration->interrupt_pin;
-    } else {
-        ret = ESP_ERR_INVALID_ARG;
-        return ret;
-    }
-
-    uint8_t int_pin_cfg = 0x00;
-
-    ret = mpu6050_read(sensor, MPU6050_INTR_PIN_CFG, &int_pin_cfg, 1);
-
-    if (ESP_OK != ret) {
-        return ret;
-    }
-
-    if (INTERRUPT_PIN_ACTIVE_LOW == interrupt_configuration->active_level) {
-        int_pin_cfg |= BIT7;
-    }
-
-    if (INTERRUPT_PIN_OPEN_DRAIN == interrupt_configuration->pin_mode) {
-        int_pin_cfg |= BIT6;
-    }
-
-    if (INTERRUPT_LATCH_UNTIL_CLEARED == interrupt_configuration->interrupt_latch) {
-        int_pin_cfg |= BIT5;
-    }
-
-    if (INTERRUPT_CLEAR_ON_ANY_READ == interrupt_configuration->interrupt_clear_behavior) {
-        int_pin_cfg |= BIT4;
-    }
-
-    ret = mpu6050_write(sensor, MPU6050_INTR_PIN_CFG, &int_pin_cfg, 1);
-
-    if (ESP_OK != ret) {
-        return ret;
-    }
-
-    gpio_int_type_t gpio_intr_type;
-
-    if (INTERRUPT_PIN_ACTIVE_LOW == interrupt_configuration->active_level) {
-        gpio_intr_type = GPIO_INTR_NEGEDGE;
-    } else {
-        gpio_intr_type = GPIO_INTR_POSEDGE;
-    }
-
-    gpio_config_t int_gpio_config = {
-        .mode = GPIO_MODE_INPUT,
-        .intr_type = gpio_intr_type,
-        .pin_bit_mask = (BIT0 << interrupt_configuration->interrupt_pin)
-    };
-
-    ret = gpio_config(&int_gpio_config);
-
-    return ret;
+    *temp = (data[0] << 8) | data[1];
 }
 
-esp_err_t mpu6050_register_isr(mpu6050_handle_t sensor, const mpu6050_isr_t isr)
-{
-    esp_err_t ret;
-    mpu6050_dev_t *sensor_device = (mpu6050_dev_t *) sensor;
 
-    if (NULL == sensor_device) {
-        ret = ESP_ERR_INVALID_ARG;
-        return ret;
+/**
+ * @brief read raw gyroscope data
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param x pointer to x-axis data
+ * @param y pointer to y-axis data
+ * @param z pointer to z-axis data
+*/
+void mpu6050_read_raw_gyroscope(mpu6050_conf_t mpu, int16_t* x, int16_t* y, int16_t* z)
+{
+    uint8_t data[6];
+    i2c_write_read(mpu, MPU6050_GYRO_XOUT_MSB, data, 6);
+
+    *x = (data[0] << 8) | data[1];
+    *y = (data[2] << 8) | data[3];
+    *z = (data[4] << 8) | data[5];
+}
+
+
+/**
+ * @brief read accelerometer
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param x pointer to x-axis data
+ * @param y pointer to y-axis data
+ * @param z pointer to z-axis data
+*/
+void mpu6050_read_accelerometer(mpu6050_conf_t mpu, float* x, float* y, float* z)
+{
+    int16_t raw_x, raw_y, raw_z;
+    mpu6050_read_raw_accelerometer(mpu, &raw_x, &raw_y, &raw_z);
+
+    float afs_sel = 16384.0f;
+
+    switch (mpu.afs_sel)
+    {
+        case MPU6050_AFS_SEL_2G:
+            afs_sel = 16384.0f;
+            break;
+        case MPU6050_AFS_SEL_4G:
+            afs_sel = 8192.0f;
+            break;
+        case MPU6050_AFS_SEL_8G:
+            afs_sel = 4096.0f;
+            break;
+        case MPU6050_AFS_SEL_16G:
+            afs_sel = 2048.0f;
+            break;
     }
 
-    ret = gpio_isr_handler_add(
-              sensor_device->int_pin,
-              ((gpio_isr_t) * (isr)),
-              ((void *) sensor)
-          );
+    *x = (float)raw_x / afs_sel;
+    *y = (float)raw_y / afs_sel;
+    *z = (float)raw_z / afs_sel;
+}
 
-    if (ESP_OK != ret) {
-        return ret;
+
+/**
+ * @brief read temperature
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param temp pointer to temperature data
+*/
+void mpu6050_read_temperature(mpu6050_conf_t mpu, float* temp)
+{
+    int16_t raw_temp;
+    mpu6050_read_raw_temperature(mpu, &raw_temp);
+
+    *temp = (float)raw_temp / 340.0f + 36.53f;
+}
+
+
+/**
+ * @brief read gyroscope
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param x pointer to x-axis data
+ * @param y pointer to y-axis data
+ * @param z pointer to z-axis data
+*/
+void mpu6050_read_gyroscope(mpu6050_conf_t mpu, float* x, float* y, float* z)
+{
+    int16_t raw_x, raw_y, raw_z;
+    mpu6050_read_raw_gyroscope(mpu, &raw_x, &raw_y, &raw_z);
+
+    float fs_sel = 131.0f;
+
+    switch (mpu.fs_sel)
+    {
+        case MPU6050_FS_SEL_250:
+            fs_sel = 131.0f;
+            break;
+        case MPU6050_FS_SEL_500:
+            fs_sel = 65.5f;
+            break;
+        case MPU6050_FS_SEL_1000:
+            fs_sel = 32.8f;
+            break;
+        case MPU6050_FS_SEL_2000:
+            fs_sel = 16.4f;
+            break;
     }
 
-    ret = gpio_intr_enable(sensor_device->int_pin);
-
-    return ret;
+    *x = (float)raw_x / fs_sel;
+    *y = (float)raw_y / fs_sel;
+    *z = (float)raw_z / fs_sel;
 }
 
-esp_err_t mpu6050_enable_interrupts(mpu6050_handle_t sensor, uint8_t interrupt_sources)
+
+/**
+ * @brief set power management
+ * 
+ * @param mpu struct with MPU6050 parameters
+ * @param dev_reset device reset
+ * @param sleep sleep mode
+ * @param cycle cycle mode
+ * @param temp_dis temperature sensor disable
+ * @param clk_sel clock select
+*/
+void mpu6050_set_power(mpu6050_conf_t mpu, bool dev_reset, bool sleep, bool cycle, bool temp_dis,
+                        enum mpu6050_clk_sel clk_sel)
 {
-    esp_err_t ret;
-    uint8_t enabled_interrupts = 0x00;
+    uint8_t old_power = 0;
+    i2c_write_read(mpu, MPU6050_PWR_MGMT_1, &old_power, 1);
 
-    ret = mpu6050_read(sensor, MPU6050_INTR_ENABLE, &enabled_interrupts, 1);
+    uint8_t power = ((uint8_t)dev_reset << 7) | ((uint8_t)sleep << 6) | ((uint8_t)cycle << 5) | (old_power & (1 << 4)) |
+                    ((uint8_t)temp_dis << 3) | clk_sel;
 
-    if (ESP_OK != ret) {
-        return ret;
-    }
-
-    if (enabled_interrupts != interrupt_sources) {
-
-        enabled_interrupts |= interrupt_sources;
-
-        ret = mpu6050_write(sensor, MPU6050_INTR_ENABLE, &enabled_interrupts, 1);
-    }
-
-    return ret;
-}
-
-esp_err_t mpu6050_disable_interrupts(mpu6050_handle_t sensor, uint8_t interrupt_sources)
-{
-    esp_err_t ret;
-    uint8_t enabled_interrupts = 0x00;
-
-    ret = mpu6050_read(sensor, MPU6050_INTR_ENABLE, &enabled_interrupts, 1);
-
-    if (ESP_OK != ret) {
-        return ret;
-    }
-
-    if (0 != (enabled_interrupts & interrupt_sources)) {
-        enabled_interrupts &= (~interrupt_sources);
-
-        ret = mpu6050_write(sensor, MPU6050_INTR_ENABLE, &enabled_interrupts, 1);
-    }
-
-    return ret;
-}
-
-esp_err_t mpu6050_get_interrupt_status(mpu6050_handle_t sensor, uint8_t *const out_intr_status)
-{
-    esp_err_t ret;
-
-    if (NULL == out_intr_status) {
-        ret = ESP_ERR_INVALID_ARG;
-        return ret;
-    }
-
-    ret = mpu6050_read(sensor, MPU6050_INTR_STATUS, out_intr_status, 1);
-
-    return ret;
-}
-
-inline uint8_t mpu6050_is_data_ready_interrupt(uint8_t interrupt_status)
-{
-    return (MPU6050_DATA_RDY_INT_BIT == (MPU6050_DATA_RDY_INT_BIT & interrupt_status));
-}
-
-inline uint8_t mpu6050_is_i2c_master_interrupt(uint8_t interrupt_status)
-{
-    return (uint8_t) (MPU6050_I2C_MASTER_INT_BIT == (MPU6050_I2C_MASTER_INT_BIT & interrupt_status));
-}
-
-inline uint8_t mpu6050_is_fifo_overflow_interrupt(uint8_t interrupt_status)
-{
-    return (uint8_t) (MPU6050_FIFO_OVERFLOW_INT_BIT == (MPU6050_FIFO_OVERFLOW_INT_BIT & interrupt_status));
-}
-
-esp_err_t mpu6050_get_raw_acce(mpu6050_handle_t sensor, mpu6050_raw_acce_value_t *const raw_acce_value)
-{
-    uint8_t data_rd[6];
-    esp_err_t ret = mpu6050_read(sensor, MPU6050_ACCEL_XOUT_H, data_rd, sizeof(data_rd));
-
-    raw_acce_value->raw_acce_x = (int16_t)((data_rd[0] << 8) + (data_rd[1]));
-    raw_acce_value->raw_acce_y = (int16_t)((data_rd[2] << 8) + (data_rd[3]));
-    raw_acce_value->raw_acce_z = (int16_t)((data_rd[4] << 8) + (data_rd[5]));
-    return ret;
-}
-
-esp_err_t mpu6050_get_raw_gyro(mpu6050_handle_t sensor, mpu6050_raw_gyro_value_t *const raw_gyro_value)
-{
-    uint8_t data_rd[6];
-    esp_err_t ret = mpu6050_read(sensor, MPU6050_GYRO_XOUT_H, data_rd, sizeof(data_rd));
-
-    raw_gyro_value->raw_gyro_x = (int16_t)((data_rd[0] << 8) + (data_rd[1]));
-    raw_gyro_value->raw_gyro_y = (int16_t)((data_rd[2] << 8) + (data_rd[3]));
-    raw_gyro_value->raw_gyro_z = (int16_t)((data_rd[4] << 8) + (data_rd[5]));
-
-    return ret;
-}
-
-esp_err_t mpu6050_get_acce(mpu6050_handle_t sensor, mpu6050_acce_value_t *const acce_value)
-{
-    esp_err_t ret;
-    float acce_sensitivity;
-    mpu6050_raw_acce_value_t raw_acce;
-
-    ret = mpu6050_get_acce_sensitivity(sensor, &acce_sensitivity);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    ret = mpu6050_get_raw_acce(sensor, &raw_acce);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-
-    acce_value->acce_x = raw_acce.raw_acce_x / acce_sensitivity;
-    acce_value->acce_y = raw_acce.raw_acce_y / acce_sensitivity;
-    acce_value->acce_z = raw_acce.raw_acce_z / acce_sensitivity;
-    return ESP_OK;
-}
-
-esp_err_t mpu6050_get_gyro(mpu6050_handle_t sensor, mpu6050_gyro_value_t *const gyro_value)
-{
-    esp_err_t ret;
-    float gyro_sensitivity;
-    mpu6050_raw_gyro_value_t raw_gyro;
-
-    ret = mpu6050_get_gyro_sensitivity(sensor, &gyro_sensitivity);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    ret = mpu6050_get_raw_gyro(sensor, &raw_gyro);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-
-    gyro_value->gyro_x = raw_gyro.raw_gyro_x / gyro_sensitivity;
-    gyro_value->gyro_y = raw_gyro.raw_gyro_y / gyro_sensitivity;
-    gyro_value->gyro_z = raw_gyro.raw_gyro_z / gyro_sensitivity;
-    return ESP_OK;
-}
-
-esp_err_t mpu6050_get_temp(mpu6050_handle_t sensor, mpu6050_temp_value_t *const temp_value)
-{
-    uint8_t data_rd[2];
-    esp_err_t ret = mpu6050_read(sensor, MPU6050_TEMP_XOUT_H, data_rd, sizeof(data_rd));
-    temp_value->temp = (int16_t)((data_rd[0] << 8) | (data_rd[1])) / 340.00 + 36.53;
-    return ret;
-}
-
-esp_err_t mpu6050_complimentory_filter(mpu6050_handle_t sensor, const mpu6050_acce_value_t *const acce_value,
-                                       const mpu6050_gyro_value_t *const gyro_value, complimentary_angle_t *const complimentary_angle)
-{
-    float acce_angle[2];
-    float gyro_angle[2];
-    float gyro_rate[2];
-    mpu6050_dev_t *sens = (mpu6050_dev_t *) sensor;
-
-    sens->counter++;
-    if (sens->counter == 1) {
-        acce_angle[0] = (atan2(acce_value->acce_y, acce_value->acce_z) * RAD_TO_DEG);
-        acce_angle[1] = (atan2(acce_value->acce_x, acce_value->acce_z) * RAD_TO_DEG);
-        complimentary_angle->roll = acce_angle[0];
-        complimentary_angle->pitch = acce_angle[1];
-        gettimeofday(sens->timer, NULL);
-        return ESP_OK;
-    }
-
-    struct timeval now, dt_t;
-    gettimeofday(&now, NULL);
-    timersub(&now, sens->timer, &dt_t);
-    sens->dt = (float) (dt_t.tv_sec) + (float)dt_t.tv_usec / 1000000;
-    gettimeofday(sens->timer, NULL);
-
-    acce_angle[0] = (atan2(acce_value->acce_y, acce_value->acce_z) * RAD_TO_DEG);
-    acce_angle[1] = (atan2(acce_value->acce_x, acce_value->acce_z) * RAD_TO_DEG);
-
-    gyro_rate[0] = gyro_value->gyro_x;
-    gyro_rate[1] = gyro_value->gyro_y;
-    gyro_angle[0] = gyro_rate[0] * sens->dt;
-    gyro_angle[1] = gyro_rate[1] * sens->dt;
-
-    complimentary_angle->roll = (ALPHA * (complimentary_angle->roll + gyro_angle[0])) + ((1 - ALPHA) * acce_angle[0]);
-    complimentary_angle->pitch = (ALPHA * (complimentary_angle->pitch + gyro_angle[1])) + ((1 - ALPHA) * acce_angle[1]);
-
-    return ESP_OK;
-}
-
-esp_err_t mpu6050_i2c_passthrough(mpu6050_handle_t sensor)
-{
-    esp_err_t ret;
-
-    uint8_t data = 0;
-    ret = mpu6050_write(sensor, 0x6A, &data, 1);
-    vTaskDelay(1);
-
-    data = 2;
-    ret = mpu6050_write(sensor, 0x37, &data, 1);
-    vTaskDelay(1);
-
-    data = 0;
-    ret = mpu6050_write(sensor, 0x6B, &data, 1);
-
-    return ret;
+    uint8_t data[2] = {MPU6050_PWR_MGMT_1, power};
+    i2c_write(mpu, data, 2);
 }
