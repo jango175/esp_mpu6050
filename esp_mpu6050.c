@@ -1,3 +1,11 @@
+/**
+ * @file esp_mpu6050.c
+ * @author JanG175
+ * @brief ESP-IDF component for MPU6050 6-axis accelerometer and gyroscope
+ * 
+ * @copyright Apache 2.0
+*/
+
 #include <stdio.h>
 #include "esp_mpu6050.h"
 
