@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include "esp_mpu6050.h"
 
-#ifdef HMC5883L_I2C_INIT
+#ifdef MPU6050_I2C_INIT
 static i2c_master_bus_handle_t bus_handle;
 #else
 extern i2c_master_bus_handle_t bus_handle;

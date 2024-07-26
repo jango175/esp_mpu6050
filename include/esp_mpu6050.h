@@ -17,7 +17,7 @@
 #define MPU6050_ADDR_1              0x69 // alternative I2C address
 
 #define MPU6050_MAX_FREQ            400000
-#define MPU6050_TIMEOUT_MS          1
+#define MPU6050_TIMEOUT_MS          2
 
 // register map
 #define MPU6050_SMPLRT_DIV          0x19
