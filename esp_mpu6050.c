@@ -79,8 +79,8 @@ void mpu6050_init(mpu6050_conf_t mpu)
     mpu6050_set_power(mpu, false, false, false, true, MPU6050_CLKSEL_INTERNAL);
     mpu6050_set_sample_rate_divider(mpu, 0);
     mpu6050_set_config(mpu, MPU6050_EXT_SYNC_SET_DISABLED, MPU6050_DLPF_CFG_0);
-    mpu6050_set_gyroscope_config(mpu, false, false, false, MPU6050_FS_SEL_250);
-    mpu6050_set_accelerometer_config(mpu, false, false, false, MPU6050_AFS_SEL_2G);
+    mpu6050_set_gyroscope_config(mpu, false, false, false, mpu.fs_sel);
+    mpu6050_set_accelerometer_config(mpu, false, false, false, mpu.afs_sel);
     mpu6050_set_fifo_enable(mpu, false, false, false, false, false, false);
 }
 
@@ -136,8 +136,6 @@ void mpu6050_set_gyroscope_config(mpu6050_conf_t mpu, bool xg_st, bool yg_st, bo
 
     uint8_t data[2] = {MPU6050_GYRO_CONFIG, config};
     i2c_write(mpu, data, 2);
-
-    mpu.fs_sel = fs_sel;
 }
 
 
@@ -161,8 +159,6 @@ void mpu6050_set_accelerometer_config(mpu6050_conf_t mpu, bool xa_st, bool ya_st
 
     uint8_t data[2] = {MPU6050_ACCEL_CONFIG, config};
     i2c_write(mpu, data, 2);
-
-    mpu.afs_sel = afs_sel;
 }
 
 
