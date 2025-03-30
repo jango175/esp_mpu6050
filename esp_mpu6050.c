@@ -16,6 +16,8 @@ extern i2c_master_bus_handle_t bus_handle;
 #endif
 static i2c_master_dev_handle_t dev_handle;
 
+static const char* TAG = "esp_mpu6050";
+
 
 /**
  * @brief i2c write handler
@@ -341,9 +343,9 @@ void mpu6050_read_gyroscope(mpu6050_conf_t mpu, float* x, float* y, float* z)
             break;
     }
 
-    *x = (float)raw_x / fs_sel;
-    *y = (float)raw_y / fs_sel;
-    *z = (float)raw_z / fs_sel;
+    *x = ((float)raw_x - MPU6050_GX_BIAS) / fs_sel;
+    *y = ((float)raw_y - MPU6050_GY_BIAS) / fs_sel;
+    *z = ((float)raw_z - MPU6050_GZ_BIAS) / fs_sel;
 }
 
 
@@ -368,4 +370,44 @@ void mpu6050_set_power(mpu6050_conf_t mpu, bool dev_reset, bool sleep, bool cycl
 
     uint8_t data[2] = {MPU6050_PWR_MGMT_1, power};
     i2c_write(mpu, data, 2);
+}
+
+
+/**
+ * @brief calibrate gyroscope (10 seconds of stable measurements)
+ * 
+ * @param mpu struct with MPU6050 parameters
+ */
+void mpu6050_calibrate_gyro(mpu6050_conf_t mpu)
+{
+    ESP_LOGI(TAG, "Hold the sensor still for 30 seconds...");
+
+    uint32_t cnt = 0;
+    int16_t gyro[3] = {0, 0, 0};
+    float gyro_sum[3] = {0.0f, 0.0f, 0.0f};
+
+    while (cnt < 6000)
+    {
+        mpu6050_read_raw_gyroscope(mpu, &gyro[0], &gyro[1], &gyro[2]);
+
+        gyro_sum[0] += (float)gyro[0];
+        gyro_sum[1] += (float)gyro[1];
+        gyro_sum[2] += (float)gyro[2];
+
+        cnt++;
+        vTaskDelay(5 / portTICK_PERIOD_MS);
+    }
+
+    gyro_sum[0] /= 6000.0f;
+    gyro_sum[1] /= 6000.0f;
+    gyro_sum[2] /= 6000.0f;
+
+    ESP_LOGW(TAG, "Calibration ended");
+
+    ESP_LOGI(TAG, "Paste these values to esp_mpu6050.h compensation values section:");
+    printf("#define MPU6050_GX_BIAS             %ff\n", gyro_sum[0]);
+    printf("#define MPU6050_GY_BIAS             %ff\n", gyro_sum[1]);
+    printf("#define MPU6050_GZ_BIAS             %ff\n", gyro_sum[2]);
+
+    vTaskDelay(portMAX_DELAY);
 }

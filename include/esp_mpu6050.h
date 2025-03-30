@@ -10,8 +10,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
+#include "esp_log.h"
 
 // #define MPU6050_I2C_INIT            1 // uncomment to initialize I2C driver
+
+// compensation values (paste your calibration values here)
+#define MPU6050_GX_BIAS             -178.352829f
+#define MPU6050_GY_BIAS             116.254669f
+#define MPU6050_GZ_BIAS             -14.421667f
 
 #define MPU6050_ADDR_0              0x68 // default I2C address
 #define MPU6050_ADDR_1              0x69 // alternative I2C address
@@ -139,3 +145,5 @@ void mpu6050_read_gyroscope(mpu6050_conf_t mpu, float* x, float* y, float* z);
 
 void mpu6050_set_power(mpu6050_conf_t mpu, bool dev_reset, bool sleep, bool cycle, bool temp_dis,
                         enum mpu6050_clk_sel clk_sel);
+
+void mpu6050_calibrate_gyro(mpu6050_conf_t mpu);
